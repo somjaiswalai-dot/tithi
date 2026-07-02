@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a73e8">
+<link rel="manifest" href="manifest.json">
+<title>Panchang – High Accuracy</title>
+<style>
+body { font-family: sans-serif; padding: 20px; max-width: 650px; margin: auto; background: #f9f9f9; }
+h2 { text-align: center; }
+label { display: block; margin-top: 10px; }
+input, button { font-size: 16px; padding: 6px; width: 100%; box-sizing: border-box; }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; }
+button { margin-top: 15px; background: #1a73e8; color: white; border: none; cursor: pointer; border-radius: 4px; }
+button:hover { background: #1557b0; }
+pre { background: #fff; padding: 15px; border: 1px solid #ccc; white-space: pre-wrap; font-size: 14px; border-radius: 6px; margin-top: 15px; }
+</style>
+</head>
+<body>
+<h2>🌙 Tithi · Nakshatra · Yoga · Karana</h2>
+<label>Date <input type="date" id="dateInput" value="2026-07-02"></label>
+<div class="row">
+  <label>Lat <input type="number" id="lat" value="22.7196" step="any"></label>
+  <label>Lon <input type="number" id="lon" value="75.8577" step="any"></label>
+</div>
+<button onclick="calculateAll()">Calculate Panchang</button>
+<pre id="output"></pre>
+
+<script>
+// ---------- Math helpers ----------
+const rad = d => d * Math.PI / 180;
+const deg = r => r * 180 / Math.PI;
+const norm360 = x => ((x % 360) + 360) % 360;
+
+// ---------- Julian Day (0h UT) ----------
+function jdFromDate(year, month, day) {
+  let a = Math.floor((14 - month) / 12);
+  let y = year + 4800 - a;
+  let m = month + 12 * a - 3;
+  return day + Math.floor((153 * m + 2) / 5) + 365 * y
+         + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) - 32045 - 0.5;
+}
+
+// ---------- Sun longitude (Meeus, ~1' accuracy) ----------
+function sunLongitude(jd) {
+  const T = (jd - 2451545.0) / 36525;
+  const L0 = 280.46646 + 36000.76983 * T + 0.0003032 * T * T;
+  const M = 357.52911 + 35999.05029 * T - 0.0001537 * T * T;
+  const C = (1.914602 - 0.004817 * T - 0.000014 * T * T) * Math.sin(rad(M))
+          + (0.019993 - 0.000101 * T) * Math.sin(rad(2 * M))
+          + 0.000289 * Math.sin(rad(3 * M));
+  return norm360(L0 + C);
+}
+
+// ---------- Moon longitude (Meeus 45 terms, ~0.01° accuracy) ----------
+function moonLongitude(jd) {
+  const T = (jd - 2451545.0) / 36525;
+  const Lp = 218.3164477 + 481267.88123421 * T - 0.0015786 * T * T
+             + T * T * T / 538841 - T * T * T * T / 65194000;
+  const D  = 297.8501921 + 445267.1114034 * T - 0.0018819 * T * T
+             + T * T * T / 545868 - T * T * T * T / 113065000;
+  const M  = 357.5291092 + 35999.0502909 * T - 0.0001536 * T * T
+             + T * T * T / 24490000;
+  const Mp = 134.9633964 + 477198.8675055 * T + 0.0087414 * T * T
+             + T * T * T / 69699 - T * T * T * T / 14712000;
+  const F  = 93.2720950 + 483202.0175233 * T - 0.0036539 * T * T
+             - T * T * T / 3526000 + T * T * T * T / 863310000;
+
+  const args = [
+    [0, 0, 1, 0], [2, 0, -1, 0], [2, 0, 0, 0], [0, 0, 2, 0],
+    [0, 1, 0, 0], [0, 0, 0, 2], [2, 0, -2, 0], [2, -1, -1, 0],
+    [2, 0, 1, 0], [2, -1, 0, 0], [0, 1, -1, 0], [1, 0, 0, 0],
+    [0, 1, 1, 0], [2, 0, 0, -2], [0, 0, 1, 2], [0, 0, 1, -2],
+    [4, 0, -1, 0], [0, 0, 3, 0], [4, 0, -2, 0], [2, 1, -1, 0],
+    [2, 1, 0, 0], [1, 0, -1, 0], [0, 1, 2, 0], [2, 0, -3, 0],
+    [2, -2, 0, 0], [4, -1, -1, 0], [2, 0, 2, 0], [0, 2, 0, 0],
+    [4, 0, 0, 0], [2, 1, 1, 0], [4, -1, 0, 0], [2, -1, -2, 0],
+    [2, 0, -1, 2], [2, -1, 1, 0], [1, 1, -1, 0], [0, 2, -1, 0],
+    [4, 0, -3, 0], [2, 2, -1, 0], [2, 0, -4, 0], [3, 0, 0, 0],
+    [1, 0, 1, 0], [1, -1, 0, 0], [0, 0, 4, 0], [4, -2, 0, 0],
+    [3, -1, 0, 0]
+  ];
+  const coeff = [
+    6.288774, 1.274027, 0.658309, 0.213616, -0.185116, -0.114332,
+    0.058793, 0.057066, 0.053322, 0.045758, -0.040923, -0.034720,
+    -0.030383, 0.015327, -0.012528, 0.010980, 0.010674, 0.010034,
+    0.008548, -0.007910, -0.006783, 0.005162, 0.005000, 0.004940,
+    -0.004756, 0.004670, 0.004610, 0.004480, 0.004320, 0.003940,
+    0.003890, 0.003780, -0.003590, -0.003580, 0.003480, 0.003440,
+    0.003250, -0.003240, -0.003040, -0.003030, 0.002910, -0.002870,
+    0.002750, 0.002730, 0.002660
+  ];
+  let sum = 0;
+  for (let i = 0; i < args.length; i++) {
+    const [a,b,c,d] = args[i];
+    sum += coeff[i] * Math.sin(rad(a*D + b*M + c*Mp + d*F));
+  }
+  return norm360(Lp + sum);
+}
+
+// ---------- Separation (Moon - Sun) ----------
+function separation(jd) {
+  return norm360(moonLongitude(jd) - sunLongitude(jd));
+}
+
+// ---------- Tithi helpers ----------
+function tithiIndex(sep) {
+  let idx = Math.floor(sep / 12) + 1;
+  return idx === 31 ? 30 : idx;
+}
+
+const shuklaNames = ['Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami','Shashthi',
+  'Saptami','Ashtami','Navami','Dashami','Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Purnima'];
+const krishnaNames = ['Pratipada','Dwitiya','Tritiya','Chaturthi','Panchami','Shashthi',
+  'Saptami','Ashtami','Navami','Dashami','Ekadashi','Dwadashi','Trayodashi','Chaturdashi','Amavasya'];
+
+function tithiName(idx) {
+  if (idx >= 1 && idx <= 15) return 'Shukla ' + shuklaNames[idx-1];
+  else return 'Krishna ' + krishnaNames[idx-16];
+}
+
+function paksha(idx) {
+  return idx <= 15 ? 'Shukla' : 'Krishna';
+}
+
+// ---------- Nakshatra ----------
+const nakshatra = [
+  'Ashwini','Bharani','Krittika','Rohini','Mrigashirsha','Ardra',
+  'Punarvasu','Pushya','Ashlesha','Magha','Purva Phalguni','Uttara Phalguni',
+  'Hasta','Chitra','Swati','Vishakha','Anuradha','Jyeshtha',
+  'Mula','Purva Ashadha','Uttara Ashadha','Shravana','Dhanishta',
+  'Shatabhisha','Purva Bhadrapada','Uttara Bhadrapada','Revati'
+];
+function nakshatraFromLon(lon) {
+  return nakshatra[Math.floor(lon * 3 / 40) % 27];
+}
+
+// ---------- Yoga ----------
+const yogaNames = [
+  'Vishkambha','Preeti','Aayushman','Saubhagya','Shobhana',
+  'Atiganda','Sukarma','Dhriti','Shoola','Ganda','Vriddhi',
+  'Dhruva','Vyaghata','Harshana','Vajra','Siddhi','Vyatipata',
+  'Variyana','Parigha','Shiva','Siddha','Sadhya','Shubha',
+  'Shukla','Brahma','Indra','Vaidhriti'
+];
+function yogaFromSunMoon(sunLon, moonLon) {
+  let sum = norm360(sunLon + moonLon);
+  return yogaNames[Math.floor(sum * 3 / 40) % 27];
+}
+
+// ---------- Karana ----------
+const karanaMovable = ['Bava','Balava','Kaulava','Taitila','Gara','Vanija','Vishti'];
+function karana(tithiIdx, sep) {
+  let start = ((tithiIdx-1)*12) % 360;
+  if (tithiIdx === 30) start = 348;
+  let within = norm360(sep - start);
+  if (tithiIdx === 30 && sep < 12) within = sep + 12;
+  let half = within < 6 ? 1 : 2;
+  let h = (tithiIdx-1)*2 + half;
+  if (h === 1) return 'Kimstughna';
+  if (h === 58) return 'Shakuni';
+  if (h === 59) return 'Chatushpada';
+  if (h === 60) return 'Naga';
+  let mIdx = (h - 2) % 7;
+  return karanaMovable[mIdx];
+}
+
+// ---------- Moon phase (illumination %) ----------
+function moonPhase(sep) {
+  return ( (1 - Math.cos(rad(sep))) / 2 * 100 ).toFixed(1);
+}
+
+// ---------- Root finding for tithi start/end ----------
+function deltaCross(jd, target) {
+  return norm360(separation(jd) - target + 180) - 180;
+}
+function findCrossing(target, jdGuess) {
+  let lo = jdGuess - 2, hi = jdGuess + 2;
+  for (let i=0; i<20; i++) {
+    if (deltaCross(lo, target) * deltaCross(hi, target) < 0) break;
+    lo -= 0.5; hi += 0.5;
+  }
+  let fLo = deltaCross(lo, target), fHi = deltaCross(hi, target);
+  if (fLo * fHi >= 0) return null;
+  for (let i=0; i<40; i++) {
+    let mid = (lo+hi)/2, fMid = deltaCross(mid, target);
+    if (Math.abs(fMid) < 1e-8) return mid;
+    if (fLo * fMid < 0) { hi=mid; fHi=fMid; }
+    else { lo=mid; fLo=fMid; }
+  }
+  return (lo+hi)/2;
+}
+
+// ---------- Sunrise/Sunset (robust, one iteration) ----------
+function sunRiseSet(jd0, lat, lon, rise) {
+  const jdNoon = jd0 + 0.5 - lon/360; // approximate local noon UT
+  function calcEvent(jdBase) {
+    const T = (jdBase - 2451545.0) / 36525;
+    const obl = 23.439291 - 0.0130042 * T;
+    const sLon = sunLongitude(jdBase);
+    const alpha = deg(Math.atan2(Math.cos(rad(obl))*Math.sin(rad(sLon)), Math.cos(rad(sLon))));
+    const delta = deg(Math.asin(Math.sin(rad(obl))*Math.sin(rad(sLon))));
+    const cosH0 = (Math.sin(rad(-0.833)) - Math.sin(rad(lat))*Math.sin(rad(delta)))
+                 / (Math.cos(rad(lat))*Math.cos(rad(delta)));
+    if (Math.abs(cosH0) > 1) return null;
+    let H0 = deg(Math.acos(cosH0));
+    return { H0, jdNoon };
+  }
+  let first = calcEvent(jdNoon);
+  if (!first) return null;
+  let H0 = first.H0;
+  let jdEvent = jdNoon + (rise ? -H0/360 : H0/360);
+  // one iteration refinement
+  let second = calcEvent(jdEvent);
+  if (second) {
+    H0 = second.H0;
+    jdEvent = jdNoon + (rise ? -H0/360 : H0/360);
+  }
+  return jdEvent;
+}
+
+// ---------- JD to IST string ----------
+function jdToIST(jd) {
+  if (!jd) return 'N/A';
+  let utcMs = (jd - 2440587.5) * 86400000;
+  return new Date(utcMs).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+// ---------- Main calculation ----------
+function calculateAll() {
+  const dateStr = document.getElementById('dateInput').value;
+  const lat = parseFloat(document.getElementById('lat').value);
+  const lon = parseFloat(document.getElementById('lon').value);
+  if (!dateStr) return;
+
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const jd0 = jdFromDate(y, m, d);           // 0h UT of date
+  const jdSunrise = sunRiseSet(jd0, lat, lon, true);
+  const jdSunset  = sunRiseSet(jd0, lat, lon, false);
+
+  if (!jdSunrise) {
+    document.getElementById('output').textContent = 'Sun never rises at this date/location.';
+    return;
+  }
+
+  const sepSunrise = separation(jdSunrise);
+  const tIdx = tithiIndex(sepSunrise);
+  const tName = tithiName(tIdx);
+  const pak = paksha(tIdx);
+
+  // start/end crossing times
+  let targetStart = ((tIdx - 1) * 12) % 360;
+  let targetEnd = (tIdx * 12) % 360;
+  if (tIdx === 30) { targetStart = 348; targetEnd = 0; }
+  const jdStart = findCrossing(targetStart, jdSunrise);
+  const jdEnd   = findCrossing(targetEnd, jdSunrise);
+
+  const moonLon = moonLongitude(jdSunrise);
+  const sunLon  = sunLongitude(jdSunrise);
+  const naks = nakshatraFromLon(moonLon);
+  const yoga = yogaFromSunMoon(sunLon, moonLon);
+  const kar  = karana(tIdx, sepSunrise);
+  const phase = moonPhase(sepSunrise);
+  const angle = sepSunrise.toFixed(2);
+
+  let out = `📅 Date        : ${dateStr}\n`;
+  out += `📍 Lat/Lon     : ${lat}°, ${lon}°\n`;
+  out += `🌅 Sunrise (IST): ${jdToIST(jdSunrise)}\n`;
+  out += `🌇 Sunset (IST) : ${jdToIST(jdSunset)}\n`;
+  out += `──────────────────────────────\n`;
+  out += `🌓 Tithi       : ${tName}\n`;
+  out += `   Paksha       : ${pak}\n`;
+  out += `   Start (IST)  : ${jdToIST(jdStart)}\n`;
+  out += `   End (IST)    : ${jdToIST(jdEnd)}\n`;
+  out += `──────────────────────────────\n`;
+  out += `📐 Moon-Sun angle : ${angle}°\n`;
+  out += `🌖 Moon phase     : ${phase}%\n`;
+  out += `🌟 Nakshatra      : ${naks}\n`;
+  out += `🧘 Yoga           : ${yoga}\n`;
+  out += `🕉️  Karana         : ${kar}\n`;
+
+  document.getElementById('output').textContent = out;
+}
+
+// initial run
+window.onload = calculateAll;
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
+}
+</script>
+</body>
+</html>
